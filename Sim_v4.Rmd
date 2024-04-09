@@ -1,0 +1,213 @@
+
+
+```{r}
+source("~/Desktop/sim_match.R")
+ls1 <-  list(N=700,#c(100,1000),
+             nsim=150,
+             ps.method = c('glm','gbm'),
+             method=c('ps','hybrid'),
+             unobs=c(0,3),
+             overlap=c(1/2,1),
+             w_replace = c(F,T),
+             noiseless=F)
+ls1 <- expand.grid(ls1)
+ls1
+```
+
+
+
+
+```{r warning=F}
+case1 <- lapply(1:32, function(j){
+  tmp <- readRDS(paste0("~/Desktop/sim/sim_", j, ".R"))
+  
+  mod <- c('lm', 'glm', 'gam', 'rf')
+  res <- matrix(numeric(4*6), ncol=6)
+  rownames(res) <- mod
+  colnames(res) <- c('RMSE0.m', 'RMSE0.s', 'RMSE1.m','RMSE1.s', 'BIAS.m','BIAS.s')
+  
+  for(i in 1:4){
+    df <- do.call(rbind,tmp$reg[[mod[i]]])
+    df <- as.data.table(df)[,row.names := rownames(df)]
+    df <- df %>% 
+      select(-Matched) %>%
+      pivot_wider(names_from = row.names, values_from = Unmatched)
+    res[i,] <- cbind(mean(df$RMSE0[[1]]),
+                     sd(df$RMSE0[[1]]),
+                     mean(df$RMSE1[[1]]),
+                     sd(df$RMSE1[[1]]),
+                     mean(df$BIAS[[1]]),
+                     sd(df$BIAS[[1]])
+                     )
+  }
+  return(round(res, 3))
+})
+
+saveRDS(case1, '~/Desktop/case1res.R')
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+c(tmp$imp_perf)$data%>% 
+  filter(asam > -2) %>% 
+    ggplot(aes(x=typ, y=value, group=typ)) +
+    geom_point(aes(group=asam,fill = asam), alpha=.9,position= position_dodge(0.55),size=2, shape = 21)+
+  geom_boxplot(color="black", fill="white", alpha=0, lwd=1) +
+  scale_fill_gradient(low = "yellow", high = "red", na.value = NA) +
+    facet_wrap(~name, scales="free") +
+  theme_bw()+
+    theme(legend.position="bottom")
+```
+
+
+```{r}
+tmp$reg_perf
+```
+
+
+
+```{r}
+rbind(
+data.frame(typ = c("RMSE0", "RMSE1", "BIAS"), mod="lm",
+           do.call(rbind, tmp$reg$lm)) %>% 
+  as.data.frame() %>% 
+  pivot_longer(cols=c("Matched", "Unmatched")),
+data.frame(typ = c("RMSE0", "RMSE1", "BIAS"), mod="glm",
+           do.call(rbind, tmp$reg$glm)) %>% 
+  as.data.frame() %>% 
+  pivot_longer(cols=c("Matched", "Unmatched")),
+data.frame(typ = c("RMSE0", "RMSE1", "BIAS"), mod="rf",
+           do.call(rbind, tmp$reg$rf)) %>% 
+  as.data.frame() %>% 
+  pivot_longer(cols=c("Matched", "Unmatched"))
+) %>% 
+  ggplot(aes(x = mod, y=value, fill=name))+
+  geom_boxplot() +
+  facet_grid(typ~., scales = "free")
+```
+
+
+
+```{r}
+tmp <- sim(1000, 1, 10, 0, seed=1792)
+```
+
+```{r}
+df <- tmp$reg$data[[1]]
+```
+
+
+```{r}
+obs <- tmp$obs[,
+               2:11] %>% 
+  as.data.frame()
+print(CreateTableOne(sapply(1:8,function(x) paste0("x",x)), strata = c("t"), data=obs, test=F, smd = T), smd=T)
+```
+
+```{r}
+md <- matchfit(tmp$obs, 1000)
+mdt <- md$md[[1]][,
+                         2:11] %>% 
+  as.data.frame()
+print(CreateTableOne(sapply(1:8,function(x) paste0("x",x)), strata = c("t"), data=mdt, test=F, smd = T), smd=T)
+```
+
+
+```{r}
+df <- tmp$reg$md[[1]]
+s_form<-as.formula(
+ paste0("y~",
+        paste0("s(x",1:8,")",collapse="+"),
+        collapse="")
+)
+fit <- mgcv::gam(s_form, family = binomial(), data = df)
+```
+
+
+
+```{r ps plot}
+id <- c()
+for(Dichotomy in Dich){
+  m <- length(which(house$rate_change_level %in% Dichotomy)) 
+  id <- c(id, m)
+}
+id_ps <- rep(apply(do.call(rbind,Dich),1, function(x) paste(x, collapse = ",")), id)
+
+tmp <- data.frame(Dichotomy=id_ps, ps.mat)
+tmp %>% 
+  mutate(ps=1/(1+exp(-ps))) %>% 
+  ggplot(aes(x=ps, fill=factor(t))) +
+  geom_density(bw=0.01,alpha=0.35) +
+  facet_wrap(.~Dichotomy, scales = "free")
+```
+
+
+
+
+
+
+
+
+
+```{r}
+for(Dichotomy in Dich){
+  m <- length(which(house$rate_change_level %in% Dichotomy)) 
+  id <- c(id, m)
+}
+id
+```
+
+
+
+```{r warning=F}
+res <- matrix(numeric(10*2), ncol=2)
+for(i in 1:10){
+  Dichotomy <- Dich[[i]]
+  Dich_id <- unique(tmp$Dichotomy)[i]
+  train <- house[rate_change_level %in% Dichotomy]
+  pred <- tmp[which(tmp$Dichotomy == Dich_id),]$ps
+  pred <- pred/(1-pred)
+  
+  res[i,1] <- ASAM(rep(1,length(pred)), train, names = x.names, dichotomy = Dichotomy)
+  res[i,2] <- ASAM(pred, train, names = x.names, dichotomy = Dichotomy)
+}
+colnames(res) <- c("Before", "After")
+rowSums(t(c(-1,1)*t(res)))<0
+```
+
+
+```{r}
+gg_temp <- tmp[which(tmp$Dichotomy == "1,2"),]
+x1 <- tmp[which(gg_temp$V2 == 1),]
+x2 <- tmp[which(gg_temp$V2 == 2),]
+x1 <- quantile(x1$ps,seq(0,1,0.01))
+x2 <- quantile(x2$ps,seq(0,1,0.01))
+
+data.frame(x1=x1, x2=x2) %>% 
+  ggplot(aes(x=x1,y=x2)) +
+  geom_point() +
+  #geom_point(data=data.frame(x=sort(x1[1:100]),y=sort(x2[1:100])),
+  #           mapping=aes(x=x, y=y), color="grey") +
+  theme(panel.background = element_blank(),
+        panel.border = element_rect(color = "black", fill=NA)) +
+  #annotate("text", x=0, y=2.5, label="Original Data") +
+  #annotate("text", x=2.5, y=1, label="Matched Data") +
+  geom_abline(color="red") +
+  #xlab("Control") + ylab("Treated") + ylim(c(-2,6)) + xlim(c(-2,6)) +
+  ggtitle("QQ-Plot of covariate in treated against control group ")
+```
+

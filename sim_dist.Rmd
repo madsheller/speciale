@@ -1,0 +1,213 @@
+
+# ALL!
+
+
+```{r}
+ls1 <-  list(method=c('ps','hybrid'),
+             ps.method = c('glm','gbm'),
+             unobs=c(0,3),
+             overlap=c(1/2,1),
+             w_replace = c(F,T))
+ls1 <- expand.grid(ls1)
+ls1 <- ls1[!(ls1$unobs==3 & ls1$overlap == 0.5),]
+ls1
+```
+
+
+```{r}
+N <- 1000
+nsim <- 200
+source("~/Desktop/sim_match_disc.R")
+library(parallel)
+start <- Sys.time()
+n_cores <- detectCores()
+mclapply(c(16,24), function(i) {
+  df <- dgp(N = N,
+            nsim = nsim,
+            dim = 10,
+            seed = 1791,
+            unobs = ls1[i,"unobs"],
+            overlap = ls1[i,"overlap"])
+  
+  tmp <- lapply(1:nsim, function(k){
+    ii <- 1:N+N*(k-1)
+    obs <- df$obs[ii,]
+    t <- obs[,'t']
+    y <- df$y[ii]
+    U_Y <- df$U_Y[ii]
+    x.obs <- df$x.names.obs
+    
+    # Propensity score
+    pi <- ps(obs, t, x.obs, ps.method = ls1[i,"ps.method"])
+    asam <- c(before=pi$ASAM.before,
+              after=pi$ASAM.after)
+    
+    # Matching
+    test <- matchfit(pi$ps, t, y,df$cf, obs, x.obs,
+                     w_replace = ls1[i,"w_replace"], method = ls1[i,"method"])
+    smd <- matrix(nrow=10,ncol=2)
+    for(l in 1:10){
+      smd[l,] <- c(SMD(obs[,l+1],t),
+                   SMD(test$matched_sample[,l+1], test$matched_sample[,'t']))
+    }
+    colnames(smd) <- c("Before", "After")
+    
+    # Regression
+    newdf <- rbind(obs[,c('intercept', x.obs, 't')], obs[,c('intercept', x.obs, 't')])
+    newdf[,'t'] <- rep(c(0,1), each=nrow(obs))
+    
+    reg <- regression(test$matched_sample,
+                      obs[,'t'],
+                      test$y,
+                      X.obs=obs[,2:(11+ls1[i,"unobs"])],
+                      newdata = newdf,
+                      U_Y = U_Y,
+                      beta = df$beta)
+    return(list(asam=asam, reg=reg, perf=test$perf))
+  })
+  saveRDS(tmp,
+          paste0("~/Desktop/simdisc_final/sim_", i,".R"))
+           }, 
+  mc.cores = n_cores
+         )
+end <- Sys.time()
+beep(1)
+```
+
+
+
+
+```{r}
+mod <- c('lm', 'glm', 'gam', 'rf')
+case1 <- lapply(1:nrow(ls1), function(j){
+  tmp <- readRDS(paste0("~/Desktop/simdisc_final/sim_", j, ".R"))
+  
+  res <- matrix(numeric(4*6), ncol=6)
+  rownames(res) <- mod
+  colnames(res) <- c('RMSE0.m', 'RMSE0.s', 'RMSE1.m','RMSE1.s', 'BIAS.m','BIAS.s')
+  
+  reg <- do.call(rbind,lapply(1:200, function(i){ tmp[[i]]$reg }))
+  
+  for(i in 1:4){
+    df <- reg[which(rownames(reg)==mod[i]),]
+    
+    res[i,] <- cbind(mean(df[,"RMSE0"]),
+                     sd(df[,"RMSE0"]),
+                     mean(df[,"RMSE1"]),
+                     sd(df[,"RMSE1"]),
+                     mean(df[,"BIAS"]),
+                     sd(df[,"BIAS"])
+                     )
+  }
+  return(round(res*10, 3))
+})
+case1
+#saveRDS(case1, '~/Desktop/case1_unobs.R')
+```
+
+```{r}
+tmp_ev <- do.call(rbind, case1[c(17,5,19,7,18,6,20,8)])
+tmp_un <- do.call(rbind, case1[c(21,9,23,11,22,10,24,12)])
+tmp_ov <- do.call(rbind, case1[c(13,1,15,3,14,2,16,4)])
+tmp_all <- do.call(cbind,list(tmp_ev, tmp_un, tmp_ov))
+tmp_all[which(row.names(tmp_all)=="lm"),]
+```
+
+
+```{r}
+paste_parentheses <- function(vector) {
+  result <- vector
+  result[seq(2, length(vector), by = 2)] <- paste0("(", vector[seq(2, length(vector), by = 2)], ") & ")
+  return(result)
+}
+id <- which(row.names(tmp_all)=="gam")
+noquote(t(sapply(1:8, function(i) paste_parentheses(tmp_all[id[i],]))))
+```
+
+
+```{r}
+ls1[which(ls1["overlap"]==0.5),]
+```
+
+## No match
+
+
+```{r}
+ls2 <- list(overlap = c(1,0.5),
+            unobs = c(0,3))
+ls2 <- expand.grid(ls2)
+ls2 <- ls2[1:3,]
+```
+
+
+
+```{r}
+N <- 1000
+nsim <- 200
+source("~/Desktop/sim_match_disc.R")
+library(parallel)
+start <- Sys.time()
+n_cores <- detectCores()
+mclapply(1:nrow(ls2), function(i) {
+  df <- dgp(N = N, dim = 10, nsim = nsim, seed=1792, overlap = ls2[i,"overlap"], unobs=ls2[i,"unobs"])
+
+tmp <- lapply(1:nsim, function(k){
+    ii <- 1:N+N*(k-1)
+    obs <- df$obs[ii,]
+    t <- obs[,'t']
+    y <- df$y[ii]
+    U_Y <- df$U_Y[ii]
+    x.obs <- df$x.names.obs
+    
+    # Regression
+    newdf <- rbind(obs[,c('intercept', x.obs, 't')], obs[,c('intercept', x.obs, 't')])
+    newdf[,'t'] <- rep(c(0,1), each=nrow(obs))
+    
+    reg <- regression(obs[,c("intercept", x.obs, 't')],
+                      obs[,'t'],
+                      y,
+                      X.obs=obs[,2:(11+ls2[i,"unobs"])],
+                      newdata = newdf,
+                      U_Y = U_Y,
+                      beta = df$beta)
+    return(reg)
+  })
+  saveRDS(tmp,
+          paste0("~/Desktop/simdisc_final/sim_reg_", i,".R"))
+           }, 
+  mc.cores = n_cores
+         )
+end <- Sys.time()
+beep(1)
+```
+
+
+
+```{r}
+mod <- c('lm', 'glm', 'gam', 'rf')
+case1_reg <- lapply(1:3, function(j){
+  tmp <- readRDS(paste0("~/Desktop/simdisc_final/sim_reg_", j, ".R"))
+  
+  res <- matrix(numeric(4*6), ncol=6)
+  rownames(res) <- mod
+  colnames(res) <- c('RMSE0.m', 'RMSE0.s', 'RMSE1.m','RMSE1.s', 'BIAS.m','BIAS.s')
+  
+  reg <- do.call(rbind,lapply(1:200, function(i){ tmp[[i]] }))
+  
+  for(i in 1:4){
+    df <- reg[which(rownames(reg)==mod[i]),]
+    
+    res[i,] <- cbind(mean(df[,"RMSE0"]),
+                     sd(df[,"RMSE0"]),
+                     mean(df[,"RMSE1"]),
+                     sd(df[,"RMSE1"]),
+                     mean(df[,"BIAS"]),
+                     sd(df[,"BIAS"])
+                     )
+  }
+  return(round(res*10, 3))
+})
+noquote(paste_parentheses(do.call(cbind,case1_reg)[4,]))
+```
+
+
